@@ -1,0 +1,231 @@
+/*
+ * Copywrite (c) 2022 ThoughtPlot, LLC.
+ */
+#include <sqlite3ext.h>
+SQLITE_EXTENSION_INIT1
+#include <stdlib.h>
+#include <string.h>
+
+#include "genvfs.h"
+#include "store.h"
+
+int genvfs_Close(sqlite3_file *fp) {
+	DBG("");
+	gen *g = (gen*)fp;
+	int err = store_close(g->st);
+	if (err) {
+		return SQLITE_ERROR;
+	}
+	return SQLITE_OK;
+}
+
+int genvfs_Write(sqlite3_file *fp, const void *buf, int iAmt, sqlite3_int64 iOfst) {
+	DBG("%lld %d", iOfst, iAmt);
+	gen *g = (gen*)fp;
+	int err = store_write(g->st, buf, iOfst, iAmt);
+	if (err) {
+		DBG("failed");
+		return SQLITE_ERROR;
+	}
+	return SQLITE_OK;
+}
+
+int genvfs_Read(sqlite3_file *fp, void *buf, int iAmt, sqlite3_int64 iOfst) {
+	DBG("%lld %d", iOfst, iAmt);
+	gen *g = (gen*)fp;
+	int err = store_read(g->st, buf, iOfst, iAmt);
+	if (err == STORE_SHORT_READ){
+		int empty = 0;
+		for (int i = 0; i < iAmt; i++){
+			if (((char*)buf)[i] != 0 ) {
+				empty = 1;
+			}
+		}
+		DBG("short read %d",empty);
+		return SQLITE_IOERR_SHORT_READ;
+	} else if (err) {
+		return SQLITE_ERROR;
+	}
+	return SQLITE_OK;
+}
+
+int genvfs_FileSize(sqlite3_file *fp, sqlite3_int64 *pSize) {
+	gen *g = (gen*)fp;
+	*pSize = store_length(g->st);
+	DBG("%lld",*pSize);
+	return SQLITE_OK;
+}
+
+int genvfs_Truncate(sqlite3_file *fp, sqlite3_int64 size) {
+	DBG("");
+	gen *g = (gen*)fp;
+	store_truncate(g->st, size);
+	return SQLITE_OK;
+}
+
+int genvfs_Sync(sqlite3_file *fp, int flags) {
+	DBG("");
+	// all writes are atomic, so this is a noop.
+	return SQLITE_OK;
+}
+
+int genvfs_Lock(sqlite3_file *fp, int eLock) {
+	gen *g = (gen*)fp;
+	if (eLock == SQLITE_LOCK_EXCLUSIVE) {
+	DBG("exclusive");
+		int err = store_lock(g->st);
+		if (err) {
+			return SQLITE_ERROR;
+		}
+	} else if (eLock == SQLITE_LOCK_SHARED) {
+	DBG("shared");
+		int err = store_lock_generation(g->st);
+		if (err) {
+			return SQLITE_ERROR;
+		}
+	}
+	return SQLITE_OK;
+}
+
+int genvfs_Unlock(sqlite3_file *fp, int eLock) {
+	gen *g = (gen*)fp;
+	if (eLock == SQLITE_LOCK_NONE) {
+		DBG("none");
+		int err = store_unlock_generation(g->st);
+		if (err) {
+			return SQLITE_ERROR;
+		}
+	} else if (eLock == SQLITE_LOCK_SHARED){
+		DBG("shared");
+		int err = store_unlock(g->st);
+		if (err) {
+			return SQLITE_ERROR;
+		}
+	}
+	return SQLITE_OK;
+}
+
+int genvfs_CheckReservedLock(sqlite3_file *fp, int *pResOut) {
+	DBG("");
+	// TODO: check with the store
+	return !SQLITE_OK;
+}
+
+int genvfs_FileControl(sqlite3_file *fp, int op, void *pArg) {
+	// TODO: I need to implement a lot more of these
+	gen *g = (gen*)fp;
+	if ( op == SQLITE_FCNTL_VFSNAME ) {
+		snprintf(*(char**)pArg, 7, "genvfs");
+		return SQLITE_OK;
+	} else if (op == SQLITE_FCNTL_BEGIN_ATOMIC_WRITE) {
+		DBG("atomic begin");
+		return SQLITE_OK;
+	} else if (op == SQLITE_FCNTL_COMMIT_ATOMIC_WRITE) {
+		DBG("atomic commit");
+		int err = store_promote_generation(g->st);
+		if (err) {
+			return SQLITE_ERROR;
+		}	 
+		return SQLITE_OK;
+	} else if (op == SQLITE_FCNTL_ROLLBACK_ATOMIC_WRITE) {
+		DBG("atomic rollback");
+		return SQLITE_OK;
+	}
+	DBG("%d", op);
+	return SQLITE_NOTFOUND;
+}
+
+int genvfs_SectorSize(sqlite3_file *fp) {
+	DBG("");
+	return 4096;
+}
+
+int genvfs_DeviceCharacteristics(sqlite3_file *fp) {
+	DBG("");
+	return (
+		//SQLITE_IOCAP_ATOMIC |
+		//SQLITE_IOCAP_SAFE_APPEND |
+		//SQLITE_IOCAP_SEQUENTIAL |
+		SQLITE_IOCAP_POWERSAFE_OVERWRITE |
+		SQLITE_IOCAP_UNDELETABLE_WHEN_OPEN |
+		SQLITE_IOCAP_BATCH_ATOMIC
+		);		
+}
+
+const sqlite3_io_methods genvfs_io_methods = {
+	1,
+	genvfs_Close,
+	genvfs_Read,
+	genvfs_Write,
+	genvfs_Truncate,
+	genvfs_Sync,
+	genvfs_FileSize,
+	genvfs_Lock,
+	genvfs_Unlock,
+	genvfs_CheckReservedLock,
+	genvfs_FileControl,
+	genvfs_SectorSize,
+	genvfs_DeviceCharacteristics
+};
+
+int genvfs_Open(sqlite3_vfs *vfs, const char *zName, sqlite3_file *f, int flags, int *pOutFlags) {
+	DBG("%s %x",zName, flags);
+	//TODO: this is where we open up the store
+	gen *g = (gen*)f;
+	g->base.pMethods = &genvfs_io_methods;
+	g->st = store_open(zName);
+//	*pOutFlags = 0;
+	return SQLITE_OK;
+}
+
+int genvfs_Delete(sqlite3_vfs *vfs, const char *zName, int syncDir) {
+	DBG("");
+	// this will never be called.
+	// why would you want to delete a whole history of a file?
+	return SQLITE_OK;
+}
+
+int genvfs_Access(sqlite3_vfs *vfs, const char *zName, int flags, int *pResOut) {
+	if (flags == SQLITE_ACCESS_EXISTS) {
+		DBG("EX");
+	}
+	if (flags == SQLITE_ACCESS_READWRITE) {
+		DBG("RW");
+	}
+
+	*pResOut = 0;
+	return SQLITE_OK;
+}
+
+int genvfs_FullPathname(sqlite3_vfs *vfs, const char *zName, int nOut, char *zOut) {
+	DBG("%s",zName);
+	snprintf(zOut, nOut, "%s", zName);
+	return SQLITE_OK;
+}
+/*
+ * init and register the global extention
+ */
+int sqlite3_genvfs_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routines *pApi) {
+	DBG("");
+	SQLITE_EXTENSION_INIT2(pApi);
+  sqlite3_vfs* vfs = sqlite3_vfs_find("gen");
+	if (!vfs) {
+		vfs = (sqlite3_vfs*) malloc(sizeof(sqlite3_vfs));
+		vfs->iVersion = 2;
+		vfs->szOsFile = sizeof(struct gen);
+		vfs->mxPathname = 100;
+		vfs->zName = "gen";
+		vfs->pAppData = 0;
+		vfs->xOpen = genvfs_Open;
+		vfs->xDelete = genvfs_Delete;
+		vfs->xAccess = genvfs_Access;
+		vfs->xFullPathname = genvfs_FullPathname;
+		int rc = sqlite3_vfs_register(vfs, 0);
+		if (rc) {
+			free(vfs);
+			return rc;
+		}
+	}
+	return SQLITE_OK_LOAD_PERMANENTLY;
+}
+
