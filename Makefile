@@ -1,9 +1,6 @@
 CC=gcc
-CPP=g++
-SHELL=bash
 
-INCLUDES=-I./sqlite -I/usr/include/hiredis
-LDLIBS=-l:libsqlite3.a -ldl -lpthread -lhiredis
+LDLIBS=-ldl -lpthread
 
 CFLAGS=-Wall 
 CPPFLAGS=${CFLAGS}
