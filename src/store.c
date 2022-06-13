@@ -283,6 +283,8 @@ int store_write(store *st, const void *buf, size_t loc, size_t len) {
 }
 
 int store_read(store *st, void *buf, size_t loc, size_t len) {
+	// there is also a file change counter at 24 with 16 len or so,
+	// that should map directly to a generation!
 	if (!st->generation) {
 		if (loc == 0 && len == 100){
 			DBG("header read");
