@@ -17,5 +17,8 @@ runner: genvfs.so tests/check_genvfs.c src/genvfs.c src/genvfs.h lz4-1.9.3/lib/l
 genvfs.so: src/genvfs.c src/genvfs.h src/store.c src/store.h lz4-1.9.3/lib/lz4.c ${HIREDIS}
 	@gcc ${CPPFLAGS} ${INCLUDES} -fPIC -shared src/genvfs.c src/store.c lz4-1.9.3/lib/lz4.c ${HIREDIS} -o genvfs.so $(LBLIBS)
 
+sqlite3:
+	@gcc -DHAVE_READLINE=1 -DSQLITE_ENABLE_BATCH_ATOMIC_WRITE=1 sqlite/shell.c sqlite/sqlite3.c -lpthread -ldl -lm -lreadline -o sqlite3
+
 clean:
-	@rm -f genvfs.so
+	@rm -f genvfs.so sqlite3
