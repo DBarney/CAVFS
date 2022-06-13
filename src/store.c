@@ -6,6 +6,8 @@
 #include <hiredis/hiredis.h>
 
 #include "store.h"
+#include "common.h"
+#include "../lz4-1.9.3/lib/lz4.h"
 
 store* store_open(const char *name) {
 	store *s = malloc(sizeof(store));
@@ -259,10 +261,16 @@ int store_write(store *st, const void *buf, size_t loc, size_t len) {
 	snprintf(bl->str, bl->len, "%s:gen:%lld:b:%x", st->name, st->new_generation, block);
 	bl->len = strlen(bl->str);
 	DBG("write %s",bl->str);
-	// TODO: maybe we should compress the data before sending it across.
+
+	char dst[4096];
+	int size = LZ4_compress_default((const char*) buf, dst, len, 4096);
+	if (!size) {
+		DBG("compression failed");
+		return 1;
+	}
 	redisReply *r = redisCommandArgv(st->redis, 3,
-		(const char *[]){ "set", bl->str, buf },
-		(const size_t[]){ 3, bl->len, len });
+		(const char *[]){ "set", bl->str, dst },
+		(const size_t[]){ 3, bl->len, size });
 	if (!r) {
 		return 1;
 	}
@@ -285,6 +293,7 @@ int store_read(store *st, void *buf, size_t loc, size_t len) {
 			}
 			err = store_read(st, buf, loc, len);
 			if (err) {
+				store_unlock_generation(st);
 				return err;
 			}
 			return store_unlock_generation(st);
@@ -310,17 +319,19 @@ int store_read(store *st, void *buf, size_t loc, size_t len) {
 	if (r->type != REDIS_REPLY_STRING) {
 		return STORE_SHORT_READ;
 	}
-	DBG("read %lld bytes from %s",r->len, st->blocks->element[block]->str);
+	char dst[4096];
+	int size = LZ4_decompress_safe (r->str, dst, r->len, 4096);
+	DBG("read %lld bytes from %s",size, st->blocks->element[block]->str);
 	if (len < 100) {
-		DBG("bytes: %*.s",len,r->str);
+		DBG("bytes: %*.s", len, dst);
 	}
-	if (len > r->len) {
+	if (len > size) {
 		DBG("a short read");
-		memcpy(buf,r->str,r->len);
+		memcpy(buf, dst, size);
 		return STORE_SHORT_READ;
 	}
 	DBG("copying from %d %d to the buffer",offset,len);
-	memcpy(buf, r->str + offset, len);
+	memcpy(buf, dst + offset, len);
 	return 0;
 }
 

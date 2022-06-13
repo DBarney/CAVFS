@@ -8,6 +8,7 @@ SQLITE_EXTENSION_INIT1
 
 #include "genvfs.h"
 #include "store.h"
+#include "common.h"
 
 int genvfs_Close(sqlite3_file *fp) {
 	DBG("");

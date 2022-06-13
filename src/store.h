@@ -5,8 +5,6 @@
 #define STORE_H
 #include <hiredis/hiredis.h>
 
-#define DBG(fmt,...) fprintf(stderr, "%s[%d]: %s: " fmt "\n", __FILE__, __LINE__, __func__, ##__VA_ARGS__),fflush(stderr)
-
 #define STORE_ERROR 1
 #define STORE_SHORT_READ 2
 
