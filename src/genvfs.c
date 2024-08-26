@@ -1,7 +1,7 @@
 /*
  * Copywrite (c) 2022 ThoughtPlot, LLC.
  */
-#include <sqlite3ext.h>
+#include "../sqlite/sqlite3ext.h"
 SQLITE_EXTENSION_INIT1
 #include <stdlib.h>
 #include <string.h>
@@ -115,7 +115,41 @@ int genvfs_CheckReservedLock(sqlite3_file *fp, int *pResOut) {
 int genvfs_FileControl(sqlite3_file *fp, int op, void *pArg) {
 	// TODO: I need to implement a lot more of these
 	gen *g = (gen*)fp;
-	if ( op == SQLITE_FCNTL_VFSNAME ) {
+	if( op==SQLITE_FCNTL_PRAGMA ){
+		char **azArg = (char**)pArg;
+		DBG("%s %s %s",azArg[0], azArg[1], azArg[2]);
+		if (sqlite3_stricmp(azArg[1], "generation") == 0) {
+			if (azArg[2]) {
+				g->st->override_generation = strtoul(azArg[2], NULL, 10);
+			}
+			DBG("%d %d",g->st->generation, g->st->override_generation);
+			azArg[0] = sqlite3_mprintf("%d",g->st->override_generation? g->st->override_generation : g->st->generation);
+			return SQLITE_OK;
+		}
+		/*
+		if( sqlite3_stricmp(azArg[1],"checksum_verification")==0 ){
+			char *zArg = azArg[2];
+			if( zArg!=0 ){
+				if( (zArg[0]>='1' && zArg[0]<='9')
+					|| sqlite3_strlike("enable%",zArg,0)==0
+					|| sqlite3_stricmp("yes",zArg)==0
+					|| sqlite3_stricmp("on",zArg)==0
+					){
+					p->verifyCksm = p->computeCksm;
+				}else{
+					p->verifyCksm = 0;
+				}
+				if( p->pPartner ) p->pPartner->verifyCksm = p->verifyCksm;
+			}
+			azArg[0] = sqlite3_mprintf("%d",p->verifyCksm);
+			return SQLITE_OK;
+		}else if( p->computeCksm && azArg[2]!=0
+			&& sqlite3_stricmp(azArg[1], "page_size")==0 ){
+			return SQLITE_OK;
+   }
+	 */
+
+	} else if ( op == SQLITE_FCNTL_VFSNAME ) {
 		snprintf(*(char**)pArg, 7, "genvfs");
 		return SQLITE_OK;
 	} else if (op == SQLITE_FCNTL_BEGIN_ATOMIC_WRITE) {
@@ -203,6 +237,36 @@ int genvfs_FullPathname(sqlite3_vfs *vfs, const char *zName, int nOut, char *zOu
 	snprintf(zOut, nOut, "%s", zName);
 	return SQLITE_OK;
 }
+
+static void f_set_generation(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
+	DBG("%d", argc);
+	sqlite3_vfs *vfs = (sqlite3_vfs*)sqlite3_user_data(ctx);
+	sqlite3_result_text(ctx, "asdf", 5, SQLITE_TRANSIENT);
+}
+
+static void f_get_generation(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
+	DBG("%d", argc);
+	sqlite3_vfs *vfs = (sqlite3_vfs*)sqlite3_user_data(ctx);
+	sqlite3_result_int64(ctx, 1234);
+}
+
+int gen_register(sqlite3* db, char** pzErrMsg, const struct sqlite3_api_routines* pApi) {
+	sqlite3_vfs *vfs = sqlite3_vfs_find("gen");
+	if (!vfs) {
+		return SQLITE_ERROR;
+	}
+
+	int rc = sqlite3_create_function(db, "gen_file_copy", 2, SQLITE_UTF8, vfs, f_set_generation, NULL, NULL);
+	if (rc) {
+		return rc;
+	}
+	rc = sqlite3_create_function(db, "_get_generation", 0, SQLITE_UTF8, vfs, f_get_generation, NULL, NULL);
+	if (rc) {
+		return rc;
+	}
+	return SQLITE_OK;
+}
+
 /*
  * init and register the global extention
  */
@@ -211,6 +275,10 @@ int sqlite3_genvfs_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routines
 	SQLITE_EXTENSION_INIT2(pApi);
   sqlite3_vfs* vfs = sqlite3_vfs_find("gen");
 	if (!vfs) {
+		sqlite3_vfs *defaultVFS = sqlite3_vfs_find(0);
+		if (defaultVFS == 0)
+			return SQLITE_NOLFS;
+		
 		vfs = (sqlite3_vfs*) malloc(sizeof(sqlite3_vfs));
 		vfs->iVersion = 2;
 		vfs->szOsFile = sizeof(struct gen);
@@ -221,11 +289,38 @@ int sqlite3_genvfs_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routines
 		vfs->xDelete = genvfs_Delete;
 		vfs->xAccess = genvfs_Access;
 		vfs->xFullPathname = genvfs_FullPathname;
+
+		// we dont need to implement any of these.
+		vfs->xDlOpen = defaultVFS->xDlOpen;
+		vfs->xDlError = defaultVFS->xDlError;
+		vfs->xDlSym = defaultVFS->xDlSym;
+		vfs->xDlClose = defaultVFS->xDlClose;
+
+		vfs->xRandomness = defaultVFS->xRandomness;
+		vfs->xSleep = defaultVFS->xSleep;
+		vfs->xCurrentTime = defaultVFS->xCurrentTime;
+		vfs->xGetLastError = defaultVFS->xGetLastError;
+		
+		vfs->xCurrentTimeInt64 = defaultVFS->xCurrentTimeInt64;
+		vfs->xSetSystemCall = defaultVFS->xSetSystemCall;
+		vfs->xNextSystemCall = defaultVFS->xNextSystemCall;
+
+		DBG("%d %d %d %d",vfs->xCurrentTime, vfs->xCurrentTimeInt64,vfs->xSetSystemCall,vfs->xNextSystemCall);
+
 		int rc = sqlite3_vfs_register(vfs, 0);
+
 		if (rc) {
 			free(vfs);
 			return rc;
 		}
+	}
+	int err = sqlite3_auto_extension((void (*)(void))gen_register);
+	if (err) {
+		return err;
+	}
+	err = gen_register(db, pzErrMsg, pApi);
+	if (err) {
+		return err;
 	}
 	return SQLITE_OK_LOAD_PERMANENTLY;
 }

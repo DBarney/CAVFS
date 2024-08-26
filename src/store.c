@@ -13,13 +13,15 @@ store* store_open(const char *name) {
 	store *s = malloc(sizeof(store));
 	s->name = name;
 	s->blocks = NULL;
+	s->first = NULL;
 	s->lock_token = NULL;
+	s->override_generation = 0;
 	s->generation = 0;
 	s->new_generation = 0;
 	s->size = 0;
 	s->lock = 0;
 	
-	redisContext *c = redisConnect("192.168.0.211", 6379);
+	redisContext *c = redisConnect("127.0.0.1", 6379);
 	if (!c) {
 		return NULL;
 	}
@@ -104,6 +106,10 @@ int store_is_locked(store *st) {
 	return st->lock;
 }
 
+unsigned long long store_generation(store *st) {
+	return st->override_generation ? st->override_generation : st->generation;
+}
+
 int store_lock_generation(store *st) {
 	redisReply *gen = redisCommand(st->redis, "GeT %s:gen", st->name);
 	if (!gen){
@@ -128,15 +134,9 @@ int store_lock_generation(store *st) {
 
 	// check if we already have the generation cached
 	// locally
-	if (generation == st->generation) {
+	if (generation == store_generation(st)) {
 		return 0;
 	}
-
-	//redisReply *r = redisCommand(st->redis, "incr %s:gen:%lld:readers", st->name, generation);
-	//if (!r) {
-	//	return 1;
-	//}
-	//freeReplyObject(r);
 
 	// clear out values because we are setting them
 	if(st->blocks) {
@@ -144,13 +144,17 @@ int store_lock_generation(store *st) {
 		st->blocks = NULL;
 		st->generation = 0;
 	}
-	
-	st->blocks = redisCommand(st->redis, "lrange %s:gen:%lld 0 -1", st->name, generation);
-	if (!st->blocks) {
-		return 1;
+	if(st->first) {
+		freeReplyObject(st->first);
+		st->first = NULL;
 	}
 	st->generation = generation;
-	redisReply *r = redisCommand(st->redis, "get %s:gen:%lld:size",st->name, st->generation);
+	st->blocks = redisCommand(st->redis, "lrange %s:gen:%lld 0 -1", st->name, store_generation(st));
+	if (!st->blocks) {
+		st->generation = 0;
+		return 1;
+	}
+	redisReply *r = redisCommand(st->redis, "get %s:gen:%lld:size",st->name, store_generation(st));
 	if (!r) {
 		return 1;
 	}
@@ -171,11 +175,6 @@ int store_unlock_generation(store *st) {
 	if (st->generation == 0) {
 		return 0;
 	}
-	//redisReply *r = redisCommand(st->redis, "decr %s:gen:%lld:readers", st->name, st->generation);
-	//if (!r) {
-	//	return 1;
-	//}
-	//freeReplyObject(r);
 	return 0;
 }
 
@@ -220,6 +219,7 @@ int store_promote_generation(store *st) {
 		return 1;
 	}
 	st->new_generation = 0;
+	st->override_generation = 0;
 	freeReplyObject(r);
 	return 0;
 }
@@ -262,8 +262,8 @@ int store_write(store *st, const void *buf, size_t loc, size_t len) {
 	bl->len = strlen(bl->str);
 	DBG("write %s",bl->str);
 
-	char dst[4096];
-	int size = LZ4_compress_default((const char*) buf, dst, len, 4096);
+	char dst[LZ4_COMPRESSBOUND(4096)];
+	int size = LZ4_compress_default((const char*) buf, dst, len, LZ4_COMPRESSBOUND(4096));
 	if (!size) {
 		DBG("compression failed");
 		return 1;
@@ -305,21 +305,26 @@ int store_read(store *st, void *buf, size_t loc, size_t len) {
 	int block = loc / 4096;
 	int offset = loc % 4096;
 	memset(buf, 0, len);
-	
-	// need to check against the map to see if we have this block
-	if (st->blocks->elements <= block) {
-		DBG("block does not exist");
-		return STORE_SHORT_READ;
-	}
-	
-	redisReply *r = redisCommandArgv(st->redis, 2,
-		(const char *[]){ "get", st->blocks->element[block]->str},
-		(const size_t[]){ 3, st->blocks->element[block]->len});
-	if (!r) {
-		return 1;
-	}
-	if (r->type != REDIS_REPLY_STRING) {
-		return STORE_SHORT_READ;
+
+	redisReply *r;
+	if (loc == 24 && len == 16 && st->first != NULL) {
+		r = st->first;	
+	} else {
+		// need to check against the map to see if we have this block
+		if (st->blocks->elements <= block) {
+			DBG("block does not exist");
+			return STORE_SHORT_READ;
+		}
+
+		r = redisCommandArgv(st->redis, 2,
+			(const char *[]){ "get", st->blocks->element[block]->str},
+			(const size_t[]){ 3, st->blocks->element[block]->len});
+		if (!r) {
+			return 1;
+		}
+		if (r->type != REDIS_REPLY_STRING) {
+			return STORE_SHORT_READ;
+		}
 	}
 	char dst[4096];
 	int size = LZ4_decompress_safe (r->str, dst, r->len, 4096);
@@ -334,6 +339,13 @@ int store_read(store *st, void *buf, size_t loc, size_t len) {
 	}
 	DBG("copying from %d %d to the buffer",offset,len);
 	memcpy(buf, dst + offset, len);
+	// if we are dealing with block 0, we should cache it somewhere.
+	// any read will check block 0 to see if the DB has been changed
+	if (loc == 24 && len == 16) {
+		st->first = r;
+	} else {
+		freeReplyObject(r);
+	}
 	return 0;
 }
 

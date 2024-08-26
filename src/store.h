@@ -16,6 +16,8 @@ typedef struct store {
 
 	unsigned long long size;
 	redisReply *blocks;
+	redisReply *first;
+	unsigned long long override_generation;
 	unsigned long long generation;
 	unsigned long long new_generation;
 
@@ -25,6 +27,8 @@ store* store_open(const char *name);
 int store_delete(store *st);
 int store_close(store* st);
 
+unsigned long long store_generation(store *st);
+int store_override_generation(store *st, unsigned long long g);
 int store_lock_generation(store *st);
 int store_unlock_generation(store	*st);
 int store_promote_generation(store	*st);

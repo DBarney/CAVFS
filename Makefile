@@ -7,7 +7,7 @@ CPPFLAGS=${CFLAGS}
 HIREDIS=hiredis-1.0.2/alloc.c hiredis-1.0.2/dict.c hiredis-1.0.2/net.c hiredis-1.0.2/sds.c hiredis-1.0.2/async.c hiredis-1.0.2/hiredis.c hiredis-1.0.2/read.c hiredis-1.0.2/sockcompat.c
 
 test: runner
-	@cat src/lock.lua | redis-cli -h 192.168.0.211 -x FUNCTION LOAD REPLACE
+	@cat src/lock.lua | redis-cli -x FUNCTION LOAD REPLACE
 	@./runner
 
 runner: genvfs.so tests/check_genvfs.c src/genvfs.c src/genvfs.h lz4-1.9.3/lib/lz4.c ${HIREDIS}
